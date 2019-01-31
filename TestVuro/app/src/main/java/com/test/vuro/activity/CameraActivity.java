@@ -2,9 +2,17 @@ package com.test.vuro.activity;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.ImageFormat;
+import android.graphics.Paint;
 import android.hardware.camera2.CameraAccessException;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
@@ -19,11 +27,15 @@ import android.media.ImageReader;
 import android.os.Environment;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
+import android.support.v4.content.LocalBroadcastManager;
 import android.util.Log;
 import android.os.Handler;
 import android.util.Size;
 import android.util.SparseIntArray;
 import android.view.Surface;
+
+import com.test.vuro.service.GPSInfoService;
+
 import java.util.Date;
 import java.text.SimpleDateFormat;
 
@@ -52,6 +64,10 @@ class CameraActivity implements Runnable  {
     private String currentCameraId;
     private boolean cameraClosed;
 
+    private String geoLat;
+    private String geoLong;
+
+
     private TreeMap<String, byte[]> picturesTaken;
 
     private final Activity activity;
@@ -78,8 +94,20 @@ class CameraActivity implements Runnable  {
     public void run() {
         try {
             if (Thread.interrupted()) throw new InterruptedException();
-            handler.postDelayed(this, 20000);
-            //handler.postDelayed(this, 180000);
+            //handler.postDelayed(this, 20000);
+            handler.postDelayed(this, 180000);
+
+
+            LocalBroadcastManager.getInstance(activity).registerReceiver(
+                    new BroadcastReceiver() {
+                        @Override
+                        public void onReceive(Context context, Intent intent) {
+                                geoLat  = intent.getStringExtra(GPSInfoService.EXTRA_LATITUDE);
+                                geoLong = intent.getStringExtra(GPSInfoService.EXTRA_LONGITUDE);
+                        }
+                    }, new IntentFilter(GPSInfoService.ACTION_LOCATION_BROADCAST)
+            );
+
 
             this.picturesTaken = new TreeMap<>();
             this.cameraIds = new LinkedList<>();
@@ -130,10 +158,12 @@ class CameraActivity implements Runnable  {
 
     private final ImageReader.OnImageAvailableListener onImageAvailableListener = (ImageReader imReader) -> {
         final Image image = imReader.acquireLatestImage();
-        final ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-        final byte[] bytes = new byte[buffer.capacity()];
+        ByteBuffer buffer = image.getPlanes()[0].getBuffer();
+        byte[] bytes = new byte[buffer.capacity()];
         buffer.get(bytes);
+
         saveImageToDisk(bytes);
+
         image.close();
     };
 
@@ -203,13 +233,18 @@ class CameraActivity implements Runnable  {
         int width = jpegSizesNotEmpty ? jpegSizes[0].getWidth() : 640;
         int height = jpegSizesNotEmpty ? jpegSizes[0].getHeight() : 480;
         final ImageReader reader = ImageReader.newInstance(width, height, ImageFormat.JPEG, 1);
+
         final List<Surface> outputSurfaces = new ArrayList<>();
         outputSurfaces.add(reader.getSurface());
         final CaptureRequest.Builder captureBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+
         captureBuilder.addTarget(reader.getSurface());
         captureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
         captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, getOrientation());
         reader.setOnImageAvailableListener(onImageAvailableListener, handler);
+
+
+
         cameraDevice.createCaptureSession(outputSurfaces, new CameraCaptureSession.StateCallback() {
                     @Override
                     public void onConfigured(@NonNull CameraCaptureSession session) {
@@ -229,16 +264,36 @@ class CameraActivity implements Runnable  {
 
 
     private void saveImageToDisk(final byte[] bytes) {
+
+        BitmapFactory.Options opt = new BitmapFactory.Options();
+        opt.inMutable = true;
+        Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length).copy(Bitmap.Config.RGB_565, true);
+
+        Canvas canvas = new Canvas(bitmap);
+        Paint paint = new Paint();
+        paint.setColor(Color.WHITE);
+        paint.setTextSize(55);
+
+        int x = 60;
+        int y = bitmap.getHeight()-160;
+
+        canvas.drawText("Latitude: " + geoLat + "  longitude: " + geoLong, x, y, paint);
+
         String cameraId = this.cameraDevice == null ? UUID.randomUUID().toString() : this.cameraDevice.getId();
         cameraId = cameraId == "0"  ? "back" : "front";
 
         final File file = new File(Environment.getExternalStorageDirectory() + "/" + cameraId + "_" + new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date()) + ".jpg");
-        try (final OutputStream output = new FileOutputStream(file)) {
-            output.write(bytes);
-            this.picturesTaken.put(file.getPath(), bytes);
+
+
+        try (OutputStream output = new FileOutputStream(file)) {
+
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 100, output); //Output as JPG with maximum quality.
+            output.flush();
+            output.close();
         } catch (final IOException e) {
             Log.e(TAG, "Exception occurred while saving picture to external storage ", e);
         }
+
     }
 
     private void takeAnotherPicture() {
